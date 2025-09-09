@@ -6,6 +6,7 @@ import com.celonis.challenge.exceptions.NotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -41,6 +42,16 @@ public class ErrorController {
     public java.util.Map<String, Object> handleInternalError(Exception e) {
         logger.error("Unhandled Exception in Controller", e);
         return java.util.Map.of("error", "Internal error");
+    }
+
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public java.util.Map<String, Object> handleValidation(MethodArgumentNotValidException ex) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .findFirst()
+                .map(err -> err.getField() + " " + err.getDefaultMessage())
+                .orElse("Validation error");
+        return java.util.Map.of("error", message);
     }
 
 }
