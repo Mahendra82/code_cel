@@ -32,6 +32,13 @@ public class SimpleHeaderFilter extends OncePerRequestFilter {
             return;
         }
 
+        // Allow actuator endpoints without auth for health/readiness/metrics
+        String uri = request.getRequestURI();
+        if (uri != null && (uri.equals("/actuator/health") || uri.startsWith("/actuator"))) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         String requestId = request.getHeader("X-Request-ID");
         if (requestId == null || requestId.isEmpty()) {
             requestId = java.util.UUID.randomUUID().toString();
