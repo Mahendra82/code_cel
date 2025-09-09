@@ -15,6 +15,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class TaskService {
@@ -23,7 +25,7 @@ public class TaskService {
 
     private final FileService fileService;
 
-    private final ExecutorService executorService = Executors.newCachedThreadPool();
+    private final ExecutorService executorService = Executors.newFixedThreadPool(4);
     private final ConcurrentHashMap<String, Future<?>> runningTasks = new ConcurrentHashMap<>();
     
     public TaskService(ProjectGenerationTaskRepository projectGenerationTaskRepository,
@@ -36,6 +38,7 @@ public class TaskService {
         return projectGenerationTaskRepository.findAll();
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public ProjectGenerationTask createTask(ProjectGenerationTask projectGenerationTask) {
         projectGenerationTask.setId(null);
         projectGenerationTask.setCreationDate(new Date());
@@ -54,6 +57,7 @@ public class TaskService {
         return get(taskId);
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public ProjectGenerationTask update(String taskId, ProjectGenerationTask projectGenerationTask) {
         ProjectGenerationTask existing = get(taskId);
         existing.setCreationDate(projectGenerationTask.getCreationDate());
@@ -61,6 +65,7 @@ public class TaskService {
         return projectGenerationTaskRepository.save(existing);
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public void delete(String taskId) {
         projectGenerationTaskRepository.deleteById(taskId);
     }
@@ -75,42 +80,49 @@ public class TaskService {
             task.setStatus(ProjectGenerationTask.Status.RUNNING);
             projectGenerationTaskRepository.save(task);
 
-            Future<?> future = executorService.submit(() -> {
-                try {
-                    int current = task.getProgress() != null ? task.getProgress() : task.getX();
-                    int target = task.getY();
-                    while (current <= target) {
+            Future<?> future;
+            try {
+                future = executorService.submit(() -> {
+                    try {
+                        int current = task.getProgress() != null ? task.getProgress() : task.getX();
+                        int target = task.getY();
+                        while (current <= target) {
+                            ProjectGenerationTask latest = get(taskId);
+                            if (Boolean.TRUE.equals(latest.getCancelRequested())) {
+                                latest.setStatus(ProjectGenerationTask.Status.CANCELLED);
+                                projectGenerationTaskRepository.save(latest);
+                                return;
+                            }
+                            latest.setProgress(current);
+                            projectGenerationTaskRepository.save(latest);
+                            if (current == target) {
+                                latest.setStatus(ProjectGenerationTask.Status.COMPLETED);
+                                projectGenerationTaskRepository.save(latest);
+                                return;
+                            }
+                            current++;
+                            try {
+                                Thread.sleep(1000);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                latest.setStatus(ProjectGenerationTask.Status.CANCELLED);
+                                projectGenerationTaskRepository.save(latest);
+                                return;
+                            }
+                        }
+                    } catch (Exception e) {
                         ProjectGenerationTask latest = get(taskId);
-                        if (Boolean.TRUE.equals(latest.getCancelRequested())) {
-                            latest.setStatus(ProjectGenerationTask.Status.CANCELLED);
-                            projectGenerationTaskRepository.save(latest);
-                            return;
-                        }
-                        latest.setProgress(current);
+                        latest.setStatus(ProjectGenerationTask.Status.FAILED);
                         projectGenerationTaskRepository.save(latest);
-                        if (current == target) {
-                            latest.setStatus(ProjectGenerationTask.Status.COMPLETED);
-                            projectGenerationTaskRepository.save(latest);
-                            return;
-                        }
-                        current++;
-                        try {
-                            Thread.sleep(1000);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            latest.setStatus(ProjectGenerationTask.Status.CANCELLED);
-                            projectGenerationTaskRepository.save(latest);
-                            return;
-                        }
+                    } finally {
+                        runningTasks.remove(taskId);
                     }
-                } catch (Exception e) {
-                    ProjectGenerationTask latest = get(taskId);
-                    latest.setStatus(ProjectGenerationTask.Status.FAILED);
-                    projectGenerationTaskRepository.save(latest);
-                } finally {
-                    runningTasks.remove(taskId);
-                }
-            });
+                });
+            } catch (RejectedExecutionException ree) {
+                task.setStatus(ProjectGenerationTask.Status.PENDING);
+                projectGenerationTaskRepository.save(task);
+                throw new com.celonis.challenge.exceptions.OverloadedException("System overloaded; try again later");
+            }
             runningTasks.put(taskId, future);
             return;
         }
@@ -128,12 +140,27 @@ public class TaskService {
 
     public ProjectGenerationTask cancel(String taskId) {
         ProjectGenerationTask task = get(taskId);
-        task.setCancelRequested(true);
-        Future<?> future = runningTasks.get(taskId);
-        if (future != null) {
-            future.cancel(true);
+        if (!Boolean.TRUE.equals(task.getCancelRequested())) {
+            task.setCancelRequested(true);
+            Future<?> future = runningTasks.get(taskId);
+            if (future != null) {
+                future.cancel(true);
+            }
         }
         return projectGenerationTaskRepository.save(task);
+    }
+
+    @javax.annotation.PreDestroy
+    public void shutdownExecutor() {
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            executorService.shutdownNow();
+        }
     }
 
     private ProjectGenerationTask get(String taskId) {

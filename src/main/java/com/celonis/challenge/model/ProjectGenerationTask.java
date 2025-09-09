@@ -9,6 +9,8 @@ import javax.persistence.Id;
 import javax.persistence.EnumType;
 import javax.persistence.Enumerated;
 import java.util.Date;
+import javax.validation.constraints.Min;
+import javax.validation.constraints.NotBlank;
 
 @Entity
 public class ProjectGenerationTask {
@@ -18,6 +20,7 @@ public class ProjectGenerationTask {
     @GenericGenerator(name = "uuid", strategy = "uuid2")
     private String id;
 
+    @NotBlank
     private String name;
 
     private Date creationDate;
@@ -26,8 +29,10 @@ public class ProjectGenerationTask {
     private String storageLocation;
 
     // Counter task fields (optional; preserves existing API)
+    @Min(0)
     private Integer x;
 
+    @Min(0)
     private Integer y;
 
     private Integer progress;
